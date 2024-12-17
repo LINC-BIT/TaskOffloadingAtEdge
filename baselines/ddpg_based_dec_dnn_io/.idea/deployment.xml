@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="PublishConfigData" autoUpload="Always" serverName="omnisky@10.1.114.109:22 agent" remoteFilesAllowedToDisappearOnAutoupload="false" confirmBeforeUploading="false">
+    <option name="confirmBeforeUploading" value="false" />
+    <serverData>
+      <paths name="hadoop@10.1.114.125:22 agent">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/hadoop/zcr/ddpg_based_dec_dnn_io" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="omnisky@10.1.114.109:22 agent">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/data/zcr/DDPG_based_DEC_DNN_IO" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="omnisky@10.1.114.131:22 agent">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/omnisky/zcr/ddpg_based_dec_dnn_io" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+    </serverData>
+    <option name="myAutoUpload" value="ALWAYS" />
+  </component>
+</project>

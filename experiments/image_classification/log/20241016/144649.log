@@ -1,0 +1,1493 @@
+2024-10-16 14:46:49,451 - log.py[38] - DEBUG: entry file content: ---------------------------------
+2024-10-16 14:46:49,451 - log.py[39] - DEBUG: 
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+
+from legodnn.utils.dl.common.env import set_random_seed
+set_random_seed(0)
+
+import sys
+sys.setrecursionlimit(100000)
+import torch
+
+from legodnn import BlockExtractor, BlockTrainer, ServerBlockProfiler, EdgeBlockProfiler, OptimalRuntime
+from legodnn.gen_series_legodnn_models import gen_series_legodnn_models
+from legodnn.block_detection.model_topology_extraction import topology_extraction
+from legodnn.presets.auto_block_manager import AutoBlockManager
+from legodnn.presets.common_detection_manager_1204_new import CommonDetectionManager
+from legodnn.model_manager.common_model_manager import CommonModelManager
+from legodnn.utils.common.file import experiments_model_file_path
+from legodnn.utils.dl.common.model import get_module, set_module, get_model_size
+
+from cv_task.datasets.image_classification.cifar_dataloader import CIFAR10Dataloader, CIFAR100Dataloader
+from cv_task.image_classification.cifar.models import resnet18
+from cv_task.image_classification.cifar.legodnn_configs import get_cifar100_train_config_200e
+from cv_task.image_classification.cifar.models import mobilenetv2_w2
+
+if __name__ == '__main__':
+    cv_task = 'image_classification'
+    dataset_name = 'cifar100'
+    model_name = 'mobilenetv2_w2'
+    method = 'legodnn'
+    device = 'cuda'
+    compress_layer_max_ratio = 0.125
+    model_input_size = (1, 3, 32, 32)
+    
+    block_sparsity = [0.0, 0.2, 0.4, 0.6, 0.8]
+    root_path = os.path.join('results/legodnn', cv_task, model_name+'_'+dataset_name + '_' + str(compress_layer_max_ratio).replace('.', '-'))
+
+    compressed_blocks_dir_path = root_path + '/compressed'
+    trained_blocks_dir_path = root_path + '/trained'
+    descendant_models_dir_path = root_path + '/descendant'
+    block_training_max_epoch = 65
+    test_sample_num = 100
+    
+    checkpoint = '/data/gxy/legodnn-auto-on-cv-models/cv_task_model/image_classification/cifar100/mobilenetv2_w2/2024-10-15/22-20-26/mobilenetv2_w2.pth'
+    teacher_model = mobilenetv2_w2(num_classes=100).to(device)
+    teacher_model.load_state_dict(torch.load(checkpoint)['net'])
+
+    print('\033[1;36m-------------------------------->    BUILD LEGODNN GRAPH\033[0m')
+    model_graph = topology_extraction(teacher_model, model_input_size, device=device, mode='unpack')
+    model_graph.print_ordered_node()
+    
+    print('\033[1;36m-------------------------------->    START BLOCK DETECTION\033[0m')
+    detection_manager = CommonDetectionManager(model_graph, max_ratio=compress_layer_max_ratio)
+    detection_manager.detection_all_blocks()
+    detection_manager.print_all_blocks()
+
+    model_manager = CommonModelManager()
+    block_manager = AutoBlockManager(block_sparsity, detection_manager, model_manager)
+    
+    print('\033[1;36m-------------------------------->    START BLOCK EXTRACTION\033[0m')
+    block_extractor = BlockExtractor(teacher_model, block_manager, compressed_blocks_dir_path, model_input_size, device)
+    block_extractor.extract_all_blocks()
+
+    print('\033[1;36m-------------------------------->    START BLOCK TRAIN\033[0m')
+    train_loader, test_loader = CIFAR100Dataloader()
+    block_trainer = BlockTrainer(teacher_model, block_manager, model_manager, compressed_blocks_dir_path,
+                                 trained_blocks_dir_path, block_training_max_epoch, train_loader, device=device)
+    block_trainer.train_all_blocks()
+
+    server_block_profiler = ServerBlockProfiler(teacher_model, block_manager, model_manager,
+                                                trained_blocks_dir_path, test_loader, model_input_size, device)
+    server_block_profiler.profile_all_blocks()
+
+    edge_block_profiler = EdgeBlockProfiler(block_manager, model_manager, trained_blocks_dir_path, 
+                                            test_sample_num, model_input_size, device)
+    edge_block_profiler.profile_all_blocks()
+
+    optimal_runtime = OptimalRuntime(trained_blocks_dir_path, model_input_size,
+                                     block_manager, model_manager, device)
+    model_size_min = get_model_size(torch.load(os.path.join(compressed_blocks_dir_path, 'model_frame.pt')))/1024**2
+    model_size_max = get_model_size(teacher_model)/1024**2 + 1
+    gen_series_legodnn_models(deadline=100, model_size_search_range=[model_size_min, model_size_max], target_model_num=100, optimal_runtime=optimal_runtime, descendant_models_save_path=descendant_models_dir_path, device=device)
+2024-10-16 14:46:49,452 - log.py[40] - DEBUG: entry file content: ---------------------------------
+2024-10-16 14:47:43,235 - block_extractor.py[28] - INFO: save pruned block block-0 (sparsity 0.0) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-0-0.pt
+2024-10-16 14:47:43,236 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (0): ModuleDict(
+      (0): Conv2d(3, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (1): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (2): ReLU6()
+    )
+    (1): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=64, bias=False)
+        (1): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(64, 32, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (4): BatchNorm2d(32, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (2): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(32, 192, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(192, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(192, 192, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=192, bias=False)
+        (4): BatchNorm2d(192, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(192, 48, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:01,491 - block_extractor.py[28] - INFO: save pruned block block-0 (sparsity 0.2) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-0-2.pt
+2024-10-16 14:48:01,492 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (0): ModuleDict(
+      (0): Conv2d(3, 48, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (1): BatchNorm2d(48, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (2): ReLU6()
+    )
+    (1): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(48, 48, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=48, bias=False)
+        (1): BatchNorm2d(48, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(48, 26, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (4): BatchNorm2d(26, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (2): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(26, 144, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(144, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(144, 144, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=144, bias=False)
+        (4): BatchNorm2d(144, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(144, 48, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:08,556 - block_extractor.py[28] - INFO: save pruned block block-0 (sparsity 0.4) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-0-4.pt
+2024-10-16 14:48:08,556 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (0): ModuleDict(
+      (0): Conv2d(3, 36, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (1): BatchNorm2d(36, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (2): ReLU6()
+    )
+    (1): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(36, 36, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=36, bias=False)
+        (1): BatchNorm2d(36, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(36, 20, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (4): BatchNorm2d(20, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (2): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(20, 100, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(100, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(100, 100, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=100, bias=False)
+        (4): BatchNorm2d(100, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(100, 48, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:09,293 - block_extractor.py[28] - INFO: save pruned block block-0 (sparsity 0.6) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-0-6.pt
+2024-10-16 14:48:09,294 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (0): ModuleDict(
+      (0): Conv2d(3, 24, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (1): BatchNorm2d(24, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (2): ReLU6()
+    )
+    (1): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(24, 24, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=24, bias=False)
+        (1): BatchNorm2d(24, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(24, 13, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (4): BatchNorm2d(13, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (2): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(13, 58, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(58, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(58, 58, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=58, bias=False)
+        (4): BatchNorm2d(58, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(58, 48, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:09,921 - block_extractor.py[28] - INFO: save pruned block block-0 (sparsity 0.8) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-0-8.pt
+2024-10-16 14:48:09,921 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (0): ModuleDict(
+      (0): Conv2d(3, 10, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (1): BatchNorm2d(10, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (2): ReLU6()
+    )
+    (1): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(10, 10, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=10, bias=False)
+        (1): BatchNorm2d(10, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(10, 7, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (4): BatchNorm2d(7, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (2): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(7, 27, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(27, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(27, 27, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=27, bias=False)
+        (4): BatchNorm2d(27, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(27, 48, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:09,999 - block_extractor.py[28] - INFO: save pruned block block-1 (sparsity 0.0) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-1-0.pt
+2024-10-16 14:48:09,999 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (2): ModuleDict(
+      (conv): ModuleDict(
+        (7): BatchNorm2d(48, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (3): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(48, 288, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(288, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(288, 288, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=288, bias=False)
+        (4): BatchNorm2d(288, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(288, 48, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(48, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (4): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(48, 288, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(288, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(288, 288, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), groups=288, bias=False)
+        (4): BatchNorm2d(288, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(288, 64, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:10,784 - block_extractor.py[28] - INFO: save pruned block block-1 (sparsity 0.2) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-1-2.pt
+2024-10-16 14:48:10,785 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (2): ModuleDict(
+      (conv): ModuleDict(
+        (7): BatchNorm2d(48, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (3): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(48, 218, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(218, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(218, 218, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=218, bias=False)
+        (4): BatchNorm2d(218, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(218, 48, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(48, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (4): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(48, 205, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(205, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(205, 205, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), groups=205, bias=False)
+        (4): BatchNorm2d(205, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(205, 64, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:11,579 - block_extractor.py[28] - INFO: save pruned block block-1 (sparsity 0.4) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-1-4.pt
+2024-10-16 14:48:11,579 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (2): ModuleDict(
+      (conv): ModuleDict(
+        (7): BatchNorm2d(48, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (3): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(48, 156, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(156, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(156, 156, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=156, bias=False)
+        (4): BatchNorm2d(156, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(156, 48, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(48, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (4): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(48, 125, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(125, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(125, 125, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), groups=125, bias=False)
+        (4): BatchNorm2d(125, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(125, 64, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:12,510 - block_extractor.py[28] - INFO: save pruned block block-1 (sparsity 0.6) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-1-6.pt
+2024-10-16 14:48:12,510 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (2): ModuleDict(
+      (conv): ModuleDict(
+        (7): BatchNorm2d(48, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (3): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(48, 98, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(98, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(98, 98, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=98, bias=False)
+        (4): BatchNorm2d(98, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(98, 48, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(48, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (4): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(48, 61, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(61, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(61, 61, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), groups=61, bias=False)
+        (4): BatchNorm2d(61, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(61, 64, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:13,281 - block_extractor.py[28] - INFO: save pruned block block-1 (sparsity 0.8) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-1-8.pt
+2024-10-16 14:48:13,281 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (2): ModuleDict(
+      (conv): ModuleDict(
+        (7): BatchNorm2d(48, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (3): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(48, 44, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(44, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(44, 44, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=44, bias=False)
+        (4): BatchNorm2d(44, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(44, 48, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(48, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (4): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(48, 25, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(25, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(25, 25, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), groups=25, bias=False)
+        (4): BatchNorm2d(25, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(25, 64, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:13,472 - block_extractor.py[28] - INFO: save pruned block block-2 (sparsity 0.0) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-2-0.pt
+2024-10-16 14:48:13,472 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (4): ModuleDict(
+      (conv): ModuleDict(
+        (7): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (5): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(64, 384, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(384, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(384, 384, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=384, bias=False)
+        (4): BatchNorm2d(384, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(384, 64, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (6): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(64, 384, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(384, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(384, 384, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=384, bias=False)
+        (4): BatchNorm2d(384, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(384, 64, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+)
+2024-10-16 14:48:14,456 - block_extractor.py[28] - INFO: save pruned block block-2 (sparsity 0.2) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-2-2.pt
+2024-10-16 14:48:14,456 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (4): ModuleDict(
+      (conv): ModuleDict(
+        (7): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (5): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(64, 288, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(288, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(288, 288, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=288, bias=False)
+        (4): BatchNorm2d(288, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(288, 64, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (6): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(64, 289, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(289, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(289, 289, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=289, bias=False)
+        (4): BatchNorm2d(289, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(289, 64, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+)
+2024-10-16 14:48:15,326 - block_extractor.py[28] - INFO: save pruned block block-2 (sparsity 0.4) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-2-4.pt
+2024-10-16 14:48:15,327 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (4): ModuleDict(
+      (conv): ModuleDict(
+        (7): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (5): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(64, 202, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(202, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(202, 202, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=202, bias=False)
+        (4): BatchNorm2d(202, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(202, 64, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (6): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(64, 197, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(197, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(197, 197, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=197, bias=False)
+        (4): BatchNorm2d(197, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(197, 64, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+)
+2024-10-16 14:48:16,081 - block_extractor.py[28] - INFO: save pruned block block-2 (sparsity 0.6) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-2-6.pt
+2024-10-16 14:48:16,081 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (4): ModuleDict(
+      (conv): ModuleDict(
+        (7): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (5): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(64, 133, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(133, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(133, 133, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=133, bias=False)
+        (4): BatchNorm2d(133, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(133, 64, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (6): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(64, 122, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(122, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(122, 122, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=122, bias=False)
+        (4): BatchNorm2d(122, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(122, 64, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+)
+2024-10-16 14:48:16,796 - block_extractor.py[28] - INFO: save pruned block block-2 (sparsity 0.8) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-2-8.pt
+2024-10-16 14:48:16,797 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (4): ModuleDict(
+      (conv): ModuleDict(
+        (7): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (5): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(64, 54, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(54, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(54, 54, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=54, bias=False)
+        (4): BatchNorm2d(54, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(54, 64, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (6): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(64, 48, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(48, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(48, 48, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=48, bias=False)
+        (4): BatchNorm2d(48, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(48, 64, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+)
+2024-10-16 14:48:16,877 - block_extractor.py[28] - INFO: save pruned block block-3 (sparsity 0.0) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-3-0.pt
+2024-10-16 14:48:16,877 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (7): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(64, 384, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(384, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(384, 384, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), groups=384, bias=False)
+        (4): BatchNorm2d(384, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(384, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (8): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(128, 768, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(768, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(768, 768, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=768, bias=False)
+        (4): BatchNorm2d(768, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(768, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+)
+2024-10-16 14:48:17,784 - block_extractor.py[28] - INFO: save pruned block block-3 (sparsity 0.2) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-3-2.pt
+2024-10-16 14:48:17,784 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (7): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(64, 278, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(278, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(278, 278, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), groups=278, bias=False)
+        (4): BatchNorm2d(278, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(278, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (8): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(128, 572, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(572, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(572, 572, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=572, bias=False)
+        (4): BatchNorm2d(572, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(572, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+)
+2024-10-16 14:48:18,733 - block_extractor.py[28] - INFO: save pruned block block-3 (sparsity 0.4) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-3-4.pt
+2024-10-16 14:48:18,733 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (7): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(64, 185, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(185, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(185, 185, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), groups=185, bias=False)
+        (4): BatchNorm2d(185, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(185, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (8): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(128, 396, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(396, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(396, 396, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=396, bias=False)
+        (4): BatchNorm2d(396, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(396, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+)
+2024-10-16 14:48:19,503 - block_extractor.py[28] - INFO: save pruned block block-3 (sparsity 0.6) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-3-6.pt
+2024-10-16 14:48:19,503 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (7): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(64, 103, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(103, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(103, 103, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), groups=103, bias=False)
+        (4): BatchNorm2d(103, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(103, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (8): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(128, 242, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(242, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(242, 242, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=242, bias=False)
+        (4): BatchNorm2d(242, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(242, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+)
+2024-10-16 14:48:20,253 - block_extractor.py[28] - INFO: save pruned block block-3 (sparsity 0.8) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-3-8.pt
+2024-10-16 14:48:20,253 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (7): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(64, 49, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(49, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(49, 49, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), groups=49, bias=False)
+        (4): BatchNorm2d(49, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(49, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (8): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(128, 107, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(107, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(107, 107, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=107, bias=False)
+        (4): BatchNorm2d(107, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(107, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+)
+2024-10-16 14:48:20,330 - block_extractor.py[28] - INFO: save pruned block block-4 (sparsity 0.0) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-4-0.pt
+2024-10-16 14:48:20,330 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (9): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(128, 768, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(768, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(768, 768, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=768, bias=False)
+        (4): BatchNorm2d(768, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(768, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:20,919 - block_extractor.py[28] - INFO: save pruned block block-4 (sparsity 0.2) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-4-2.pt
+2024-10-16 14:48:20,919 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (9): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(128, 570, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(570, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(570, 570, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=570, bias=False)
+        (4): BatchNorm2d(570, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(570, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:21,438 - block_extractor.py[28] - INFO: save pruned block block-4 (sparsity 0.4) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-4-4.pt
+2024-10-16 14:48:21,439 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (9): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(128, 399, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(399, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(399, 399, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=399, bias=False)
+        (4): BatchNorm2d(399, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(399, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:21,878 - block_extractor.py[28] - INFO: save pruned block block-4 (sparsity 0.6) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-4-6.pt
+2024-10-16 14:48:21,879 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (9): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(128, 233, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(233, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(233, 233, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=233, bias=False)
+        (4): BatchNorm2d(233, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(233, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:22,271 - block_extractor.py[28] - INFO: save pruned block block-4 (sparsity 0.8) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-4-8.pt
+2024-10-16 14:48:22,271 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (9): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(128, 94, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(94, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(94, 94, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=94, bias=False)
+        (4): BatchNorm2d(94, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(94, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:22,472 - block_extractor.py[28] - INFO: save pruned block block-5 (sparsity 0.0) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-5-0.pt
+2024-10-16 14:48:22,473 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (10): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(128, 768, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(768, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(768, 768, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=768, bias=False)
+        (4): BatchNorm2d(768, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(768, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:23,358 - block_extractor.py[28] - INFO: save pruned block block-5 (sparsity 0.2) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-5-2.pt
+2024-10-16 14:48:23,358 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (10): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(128, 565, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(565, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(565, 565, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=565, bias=False)
+        (4): BatchNorm2d(565, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(565, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:23,891 - block_extractor.py[28] - INFO: save pruned block block-5 (sparsity 0.4) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-5-4.pt
+2024-10-16 14:48:23,892 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (10): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(128, 394, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(394, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(394, 394, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=394, bias=False)
+        (4): BatchNorm2d(394, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(394, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:24,485 - block_extractor.py[28] - INFO: save pruned block block-5 (sparsity 0.6) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-5-6.pt
+2024-10-16 14:48:24,485 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (10): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(128, 227, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(227, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(227, 227, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=227, bias=False)
+        (4): BatchNorm2d(227, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(227, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:24,944 - block_extractor.py[28] - INFO: save pruned block block-5 (sparsity 0.8) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-5-8.pt
+2024-10-16 14:48:24,945 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (10): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(128, 88, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(88, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(88, 88, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=88, bias=False)
+        (4): BatchNorm2d(88, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(88, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:25,036 - block_extractor.py[28] - INFO: save pruned block block-6 (sparsity 0.0) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-6-0.pt
+2024-10-16 14:48:25,036 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (11): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(128, 768, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(768, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(768, 768, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=768, bias=False)
+        (4): BatchNorm2d(768, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(768, 192, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(192, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (12): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(192, 1152, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(1152, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(1152, 1152, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=1152, bias=False)
+        (4): BatchNorm2d(1152, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(1152, 192, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(192, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+)
+2024-10-16 14:48:26,468 - block_extractor.py[28] - INFO: save pruned block block-6 (sparsity 0.2) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-6-2.pt
+2024-10-16 14:48:26,468 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (11): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(128, 538, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(538, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(538, 538, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=538, bias=False)
+        (4): BatchNorm2d(538, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(538, 192, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(192, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (12): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(192, 844, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(844, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(844, 844, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=844, bias=False)
+        (4): BatchNorm2d(844, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(844, 192, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(192, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+)
+2024-10-16 14:48:27,915 - block_extractor.py[28] - INFO: save pruned block block-6 (sparsity 0.4) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-6-4.pt
+2024-10-16 14:48:27,915 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (11): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(128, 352, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(352, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(352, 352, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=352, bias=False)
+        (4): BatchNorm2d(352, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(352, 192, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(192, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (12): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(192, 592, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(592, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(592, 592, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=592, bias=False)
+        (4): BatchNorm2d(592, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(592, 192, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(192, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+)
+2024-10-16 14:48:28,862 - block_extractor.py[28] - INFO: save pruned block block-6 (sparsity 0.6) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-6-6.pt
+2024-10-16 14:48:28,862 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (11): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(128, 202, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(202, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(202, 202, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=202, bias=False)
+        (4): BatchNorm2d(202, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(202, 192, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(192, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (12): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(192, 364, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(364, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(364, 364, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=364, bias=False)
+        (4): BatchNorm2d(364, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(364, 192, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(192, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+)
+2024-10-16 14:48:29,739 - block_extractor.py[28] - INFO: save pruned block block-6 (sparsity 0.8) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-6-8.pt
+2024-10-16 14:48:29,739 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (11): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(128, 79, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(79, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(79, 79, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=79, bias=False)
+        (4): BatchNorm2d(79, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(79, 192, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(192, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (12): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(192, 142, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(142, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(142, 142, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=142, bias=False)
+        (4): BatchNorm2d(142, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(142, 192, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(192, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+)
+2024-10-16 14:48:29,816 - block_extractor.py[28] - INFO: save pruned block block-7 (sparsity 0.0) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-7-0.pt
+2024-10-16 14:48:29,817 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (13): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(192, 1152, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(1152, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(1152, 1152, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=1152, bias=False)
+        (4): BatchNorm2d(1152, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(1152, 192, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:30,571 - block_extractor.py[28] - INFO: save pruned block block-7 (sparsity 0.2) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-7-2.pt
+2024-10-16 14:48:30,571 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (13): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(192, 854, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(854, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(854, 854, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=854, bias=False)
+        (4): BatchNorm2d(854, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(854, 192, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:31,228 - block_extractor.py[28] - INFO: save pruned block block-7 (sparsity 0.4) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-7-4.pt
+2024-10-16 14:48:31,229 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (13): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(192, 586, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(586, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(586, 586, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=586, bias=False)
+        (4): BatchNorm2d(586, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(586, 192, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:31,798 - block_extractor.py[28] - INFO: save pruned block block-7 (sparsity 0.6) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-7-6.pt
+2024-10-16 14:48:31,799 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (13): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(192, 359, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(359, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(359, 359, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=359, bias=False)
+        (4): BatchNorm2d(359, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(359, 192, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:32,346 - block_extractor.py[28] - INFO: save pruned block block-7 (sparsity 0.8) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-7-8.pt
+2024-10-16 14:48:32,347 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (13): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(192, 155, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(155, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(155, 155, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=155, bias=False)
+        (4): BatchNorm2d(155, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(155, 192, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:32,472 - block_extractor.py[28] - INFO: save pruned block block-8 (sparsity 0.0) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-8-0.pt
+2024-10-16 14:48:32,472 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (14): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(192, 1152, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(1152, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(1152, 1152, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), groups=1152, bias=False)
+        (4): BatchNorm2d(1152, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(1152, 320, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(320, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (15): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(320, 1920, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(1920, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(1920, 1920, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=1920, bias=False)
+        (4): BatchNorm2d(1920, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(1920, 320, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(320, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+)
+2024-10-16 14:48:34,876 - block_extractor.py[28] - INFO: save pruned block block-8 (sparsity 0.2) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-8-2.pt
+2024-10-16 14:48:34,876 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (14): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(192, 904, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(904, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(904, 904, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), groups=904, bias=False)
+        (4): BatchNorm2d(904, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(904, 320, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(320, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (15): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(320, 1398, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(1398, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(1398, 1398, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=1398, bias=False)
+        (4): BatchNorm2d(1398, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(1398, 320, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(320, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+)
+2024-10-16 14:48:36,636 - block_extractor.py[28] - INFO: save pruned block block-8 (sparsity 0.4) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-8-4.pt
+2024-10-16 14:48:36,636 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (14): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(192, 657, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(657, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(657, 657, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), groups=657, bias=False)
+        (4): BatchNorm2d(657, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(657, 320, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(320, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (15): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(320, 937, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(937, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(937, 937, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=937, bias=False)
+        (4): BatchNorm2d(937, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(937, 320, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(320, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+)
+2024-10-16 14:48:38,111 - block_extractor.py[28] - INFO: save pruned block block-8 (sparsity 0.6) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-8-6.pt
+2024-10-16 14:48:38,111 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (14): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(192, 422, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(422, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(422, 422, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), groups=422, bias=False)
+        (4): BatchNorm2d(422, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(422, 320, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(320, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (15): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(320, 576, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(576, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(576, 576, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=576, bias=False)
+        (4): BatchNorm2d(576, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(576, 320, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(320, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+)
+2024-10-16 14:48:39,252 - block_extractor.py[28] - INFO: save pruned block block-8 (sparsity 0.8) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-8-8.pt
+2024-10-16 14:48:39,253 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (14): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(192, 219, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(219, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(219, 219, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), groups=219, bias=False)
+        (4): BatchNorm2d(219, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(219, 320, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(320, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (15): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(320, 227, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(227, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(227, 227, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=227, bias=False)
+        (4): BatchNorm2d(227, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(227, 320, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(320, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+)
+2024-10-16 14:48:39,340 - block_extractor.py[28] - INFO: save pruned block block-9 (sparsity 0.0) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-9-0.pt
+2024-10-16 14:48:39,340 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (16): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(320, 1920, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(1920, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(1920, 1920, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=1920, bias=False)
+        (4): BatchNorm2d(1920, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(1920, 320, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:40,742 - block_extractor.py[28] - INFO: save pruned block block-9 (sparsity 0.2) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-9-2.pt
+2024-10-16 14:48:40,742 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (16): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(320, 1457, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(1457, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(1457, 1457, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=1457, bias=False)
+        (4): BatchNorm2d(1457, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(1457, 320, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:41,796 - block_extractor.py[28] - INFO: save pruned block block-9 (sparsity 0.4) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-9-4.pt
+2024-10-16 14:48:41,796 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (16): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(320, 942, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(942, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(942, 942, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=942, bias=False)
+        (4): BatchNorm2d(942, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(942, 320, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:42,797 - block_extractor.py[28] - INFO: save pruned block block-9 (sparsity 0.6) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-9-6.pt
+2024-10-16 14:48:42,797 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (16): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(320, 559, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(559, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(559, 559, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=559, bias=False)
+        (4): BatchNorm2d(559, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(559, 320, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:43,545 - block_extractor.py[28] - INFO: save pruned block block-9 (sparsity 0.8) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-9-8.pt
+2024-10-16 14:48:43,545 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (16): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(320, 214, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(214, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(214, 214, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=214, bias=False)
+        (4): BatchNorm2d(214, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(214, 320, kernel_size=(1, 1), stride=(1, 1), bias=False)
+      )
+    )
+  )
+)
+2024-10-16 14:48:43,663 - block_extractor.py[28] - INFO: save pruned block block-10 (sparsity 0.0) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-10-0.pt
+2024-10-16 14:48:43,663 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (17): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(320, 1920, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(1920, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(1920, 1920, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=1920, bias=False)
+        (4): BatchNorm2d(1920, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(1920, 640, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(640, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+  (conv): ModuleDict(
+    (0): Conv2d(640, 2560, kernel_size=(1, 1), stride=(1, 1), bias=False)
+  )
+)
+2024-10-16 14:48:45,381 - block_extractor.py[28] - INFO: save pruned block block-10 (sparsity 0.2) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-10-2.pt
+2024-10-16 14:48:45,381 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (17): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(320, 1474, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(1474, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(1474, 1474, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=1474, bias=False)
+        (4): BatchNorm2d(1474, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(1474, 512, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+  (conv): ModuleDict(
+    (0): Conv2d(512, 2560, kernel_size=(1, 1), stride=(1, 1), bias=False)
+  )
+)
+2024-10-16 14:48:46,743 - block_extractor.py[28] - INFO: save pruned block block-10 (sparsity 0.4) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-10-4.pt
+2024-10-16 14:48:46,743 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (17): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(320, 1050, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(1050, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(1050, 1050, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=1050, bias=False)
+        (4): BatchNorm2d(1050, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(1050, 384, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(384, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+  (conv): ModuleDict(
+    (0): Conv2d(384, 2560, kernel_size=(1, 1), stride=(1, 1), bias=False)
+  )
+)
+2024-10-16 14:48:47,688 - block_extractor.py[28] - INFO: save pruned block block-10 (sparsity 0.6) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-10-6.pt
+2024-10-16 14:48:47,688 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (17): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(320, 597, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(597, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(597, 597, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=597, bias=False)
+        (4): BatchNorm2d(597, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(597, 256, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+  (conv): ModuleDict(
+    (0): Conv2d(256, 2560, kernel_size=(1, 1), stride=(1, 1), bias=False)
+  )
+)
+2024-10-16 14:48:48,423 - block_extractor.py[28] - INFO: save pruned block block-10 (sparsity 0.8) in results/legodnn/image_classification/mobilenetv2_w2_cifar100_0-125/compressed/block-10-8.pt
+2024-10-16 14:48:48,423 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (features): ModuleDict(
+    (17): ModuleDict(
+      (conv): ModuleDict(
+        (0): Conv2d(320, 221, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (1): BatchNorm2d(221, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (2): ReLU6()
+        (3): Conv2d(221, 221, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=221, bias=False)
+        (4): BatchNorm2d(221, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (5): ReLU6()
+        (6): Conv2d(221, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+        (7): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+  (conv): ModuleDict(
+    (0): Conv2d(128, 2560, kernel_size=(1, 1), stride=(1, 1), bias=False)
+  )
+)
+2024-10-16 14:48:51,455 - block_trainer.py[183] - INFO: start block training...
+2024-10-16 14:52:11,899 - block_trainer.py[357] - INFO: epoch 0 (200.444471s, 55 blocks still need training), blocks loss: 
++---------+------------+------------+------------+------------+------------+
+|         |    0.0     |    0.2     |    0.4     |    0.6     |    0.8     |
++---------+------------+------------+------------+------------+------------+
+| block-0 | 0.00163885 | 0.00332008 | 0.02066330 | 0.09949450 | 0.32589795 |
+|         |    (-)     |    (-)     |    (-)     |    (-)     |    (-)     |
++---------+------------+------------+------------+------------+------------+
++---------+------------+------------+------------+------------+------------+
+|         |    0.0     |    0.2     |    0.4     |    0.6     |    0.8     |
++---------+------------+------------+------------+------------+------------+
+| block-1 | 0.00237146 | 0.01150890 | 0.09291111 | 0.36699614 | 0.78341493 |
+|         |    (-)     |    (-)     |    (-)     |    (-)     |    (-)     |
++---------+------------+------------+------------+------------+------------+
++---------+------------+------------+------------+------------+------------+
+|         |    0.0     |    0.2     |    0.4     |    0.6     |    0.8     |
++---------+------------+------------+------------+------------+------------+
+| block-2 | 0.00106107 | 0.00171066 | 0.00666115 | 0.01768570 | 0.05623746 |
+|         |    (-)     |    (-)     |    (-)     |    (-)     |    (-)     |
++---------+------------+------------+------------+------------+------------+
++---------+------------+------------+------------+------------+------------+
+|         |    0.0     |    0.2     |    0.4     |    0.6     |    0.8     |
++---------+------------+------------+------------+------------+------------+
+| block-3 | 0.00168116 | 0.00449649 | 0.01629078 | 0.05249620 | 0.13436754 |
+|         |    (-)     |    (-)     |    (-)     |    (-)     |    (-)     |
++---------+------------+------------+------------+------------+------------+
++---------+------------+------------+------------+------------+------------+
+|         |    0.0     |    0.2     |    0.4     |    0.6     |    0.8     |
++---------+------------+------------+------------+------------+------------+
+| block-4 | 0.00011375 | 0.00031000 | 0.00114455 | 0.00382847 | 0.01047193 |
+|         |    (-)     |    (-)     |    (-)     |    (-)     |    (-)     |
++---------+------------+------------+------------+------------+------------+
++---------+------------+------------+------------+------------+------------+
+|         |    0.0     |    0.2     |    0.4     |    0.6     |    0.8     |
++---------+------------+------------+------------+------------+------------+
+| block-5 | 0.00008669 | 0.00021299 | 0.00089658 | 0.00281656 | 0.00709163 |
+|         |    (-)     |    (-)     |    (-)     |    (-)     |    (-)     |
++---------+------------+------------+------------+------------+------------+
++---------+------------+------------+------------+------------+------------+
+|         |    0.0     |    0.2     |    0.4     |    0.6     |    0.8     |
++---------+------------+------------+------------+------------+------------+
+| block-6 | 0.00094664 | 0.00518572 | 0.01893952 | 0.04939237 | 0.14247394 |
+|         |    (-)     |    (-)     |    (-)     |    (-)     |    (-)     |
++---------+------------+------------+------------+------------+------------+
++---------+------------+------------+------------+------------+------------+
+|         |    0.0     |    0.2     |    0.4     |    0.6     |    0.8     |
++---------+------------+------------+------------+------------+------------+
+| block-7 | 0.00008352 | 0.00015885 | 0.00073412 | 0.00261115 | 0.00764759 |
+|         |    (-)     |    (-)     |    (-)     |    (-)     |    (-)     |
++---------+------------+------------+------------+------------+------------+
++---------+------------+------------+------------+------------+------------+
+|         |    0.0     |    0.2     |    0.4     |    0.6     |    0.8     |
++---------+------------+------------+------------+------------+------------+
+| block-8 | 0.00260653 | 0.00351633 | 0.00899195 | 0.02574546 | 0.08514238 |
+|         |    (-)     |    (-)     |    (-)     |    (-)     |    (-)     |
++---------+------------+------------+------------+------------+------------+
++---------+------------+------------+------------+------------+------------+
+|         |    0.0     |    0.2     |    0.4     |    0.6     |    0.8     |
++---------+------------+------------+------------+------------+------------+
+| block-9 | 0.00059283 | 0.00075810 | 0.00325855 | 0.00996312 | 0.02553505 |
+|         |    (-)     |    (-)     |    (-)     |    (-)     |    (-)     |
++---------+------------+------------+------------+------------+------------+
++----------+------------+------------+------------+------------+------------+
+|          |    0.0     |    0.2     |    0.4     |    0.6     |    0.8     |
++----------+------------+------------+------------+------------+------------+
+| block-10 | 0.00389360 | 0.00424321 | 0.01006132 | 0.03665438 | 0.12241199 |
+|          |    (-)     |    (-)     |    (-)     |    (-)     |    (-)     |
++----------+------------+------------+------------+------------+------------+
+

@@ -1,0 +1,619 @@
+2024-10-17 01:10:40,931 - log.py[38] - DEBUG: entry file content: ---------------------------------
+2024-10-17 01:10:40,932 - log.py[39] - DEBUG: 
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+
+from legodnn.utils.dl.common.env import set_random_seed
+set_random_seed(0)
+
+import sys
+sys.setrecursionlimit(100000)
+import torch
+
+from legodnn import BlockExtractor, BlockTrainer, ServerBlockProfiler, EdgeBlockProfiler, OptimalRuntime
+from legodnn.gen_series_legodnn_models import gen_series_legodnn_models
+from legodnn.block_detection.model_topology_extraction import topology_extraction
+from legodnn.presets.auto_block_manager import AutoBlockManager
+from legodnn.presets.common_detection_manager_1204_new import CommonDetectionManager
+from legodnn.model_manager.common_model_manager import CommonModelManager
+from legodnn.utils.common.file import experiments_model_file_path
+from legodnn.utils.dl.common.model import get_module, set_module, get_model_size
+
+from cv_task.datasets.image_classification.cifar_dataloader import CIFAR10Dataloader, CIFAR100Dataloader
+from cv_task.image_classification.cifar.models import resnet18
+from cv_task.image_classification.cifar.legodnn_configs import get_cifar100_train_config_200e
+
+
+if __name__ == '__main__':
+    cv_task = 'image_classification'
+    dataset_name = 'cifar100'
+    model_name = 'resnet18'
+    method = 'legodnn'
+    device = 'cuda'
+    compress_layer_max_ratio = 0.125
+    model_input_size = (1, 3, 32, 32)
+    
+    block_sparsity = [0.0, 0.2, 0.4, 0.6, 0.8]
+    root_path = os.path.join('results/legodnn', cv_task, model_name+'_'+dataset_name + '_' + str(compress_layer_max_ratio).replace('.', '-'))
+
+    compressed_blocks_dir_path = root_path + '/compressed'
+    trained_blocks_dir_path = root_path + '/trained'
+    descendant_models_dir_path = root_path + '/descendant'
+    block_training_max_epoch = 65
+    test_sample_num = 100
+    
+    checkpoint = '/data/gxy/legodnn-auto-on-cv-models/cv_task_model/image_classification/cifar100/resnet18/2024-10-14/20-15-10/resnet18.pth'
+    teacher_model = resnet18(num_classes=100).to(device)
+    teacher_model.load_state_dict(torch.load(checkpoint)['net'])
+
+    print('\033[1;36m-------------------------------->    BUILD LEGODNN GRAPH\033[0m')
+    model_graph = topology_extraction(teacher_model, model_input_size, device=device, mode='unpack')
+    model_graph.print_ordered_node()
+    
+    print('\033[1;36m-------------------------------->    START BLOCK DETECTION\033[0m')
+    detection_manager = CommonDetectionManager(model_graph, max_ratio=compress_layer_max_ratio)
+    detection_manager.detection_all_blocks()
+    detection_manager.print_all_blocks()
+
+    model_manager = CommonModelManager()
+    block_manager = AutoBlockManager(block_sparsity, detection_manager, model_manager)
+    
+    print('\033[1;36m-------------------------------->    START BLOCK EXTRACTION\033[0m')
+    block_extractor = BlockExtractor(teacher_model, block_manager, compressed_blocks_dir_path, model_input_size, device)
+    block_extractor.extract_all_blocks()
+
+    print('\033[1;36m-------------------------------->    START BLOCK TRAIN\033[0m')
+    train_loader, test_loader = CIFAR100Dataloader()
+    block_trainer = BlockTrainer(teacher_model, block_manager, model_manager, compressed_blocks_dir_path,
+                                 trained_blocks_dir_path, block_training_max_epoch, train_loader, device=device)
+    block_trainer.train_all_blocks()
+
+    server_block_profiler = ServerBlockProfiler(teacher_model, block_manager, model_manager,
+                                                trained_blocks_dir_path, test_loader, model_input_size, device)
+    server_block_profiler.profile_all_blocks()
+
+    edge_block_profiler = EdgeBlockProfiler(block_manager, model_manager, trained_blocks_dir_path, 
+                                            test_sample_num, model_input_size, device)
+    edge_block_profiler.profile_all_blocks()
+
+    optimal_runtime = OptimalRuntime(trained_blocks_dir_path, model_input_size,
+                                     block_manager, model_manager, device)
+    model_size_min = get_model_size(torch.load(os.path.join(compressed_blocks_dir_path, 'model_frame.pt')))/1024**2
+    model_size_max = get_model_size(teacher_model)/1024**2 + 1
+    gen_series_legodnn_models(deadline=100, model_size_search_range=[model_size_min, model_size_max], target_model_num=100, optimal_runtime=optimal_runtime, descendant_models_save_path=descendant_models_dir_path, device=device)
+2024-10-17 01:10:40,932 - log.py[40] - DEBUG: entry file content: ---------------------------------
+2024-10-17 01:23:44,270 - block_extractor.py[28] - INFO: save pruned block block-0 (sparsity 0.0) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-0-0.pt
+2024-10-17 01:23:44,748 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (bn1): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+  (relu1): ReLU()
+  (layer1): ModuleDict(
+    (0): ModuleDict(
+      (conv1): Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:32:54,378 - block_extractor.py[28] - INFO: save pruned block block-0 (sparsity 0.2) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-0-2.pt
+2024-10-17 01:32:54,853 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (bn1): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+  (relu1): ReLU()
+  (layer1): ModuleDict(
+    (0): ModuleDict(
+      (conv1): Conv2d(64, 52, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(52, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(52, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:18,919 - block_extractor.py[28] - INFO: save pruned block block-0 (sparsity 0.4) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-0-4.pt
+2024-10-17 01:33:18,919 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (bn1): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+  (relu1): ReLU()
+  (layer1): ModuleDict(
+    (0): ModuleDict(
+      (conv1): Conv2d(64, 39, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(39, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(39, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:26,339 - block_extractor.py[28] - INFO: save pruned block block-0 (sparsity 0.6) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-0-6.pt
+2024-10-17 01:33:26,340 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (bn1): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+  (relu1): ReLU()
+  (layer1): ModuleDict(
+    (0): ModuleDict(
+      (conv1): Conv2d(64, 26, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(26, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(26, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:27,114 - block_extractor.py[28] - INFO: save pruned block block-0 (sparsity 0.8) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-0-8.pt
+2024-10-17 01:33:27,114 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (bn1): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+  (relu1): ReLU()
+  (layer1): ModuleDict(
+    (0): ModuleDict(
+      (conv1): Conv2d(64, 13, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(13, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(13, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:27,226 - block_extractor.py[28] - INFO: save pruned block block-1 (sparsity 0.0) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-1-0.pt
+2024-10-17 01:33:27,227 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer1): ModuleDict(
+    (0): ModuleDict(
+      (relu2): ReLU()
+    )
+    (1): ModuleDict(
+      (conv1): Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:27,977 - block_extractor.py[28] - INFO: save pruned block block-1 (sparsity 0.2) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-1-2.pt
+2024-10-17 01:33:27,977 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer1): ModuleDict(
+    (0): ModuleDict(
+      (relu2): ReLU()
+    )
+    (1): ModuleDict(
+      (conv1): Conv2d(64, 52, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(52, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(52, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:28,742 - block_extractor.py[28] - INFO: save pruned block block-1 (sparsity 0.4) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-1-4.pt
+2024-10-17 01:33:28,742 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer1): ModuleDict(
+    (0): ModuleDict(
+      (relu2): ReLU()
+    )
+    (1): ModuleDict(
+      (conv1): Conv2d(64, 39, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(39, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(39, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:29,509 - block_extractor.py[28] - INFO: save pruned block block-1 (sparsity 0.6) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-1-6.pt
+2024-10-17 01:33:29,510 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer1): ModuleDict(
+    (0): ModuleDict(
+      (relu2): ReLU()
+    )
+    (1): ModuleDict(
+      (conv1): Conv2d(64, 26, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(26, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(26, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:30,324 - block_extractor.py[28] - INFO: save pruned block block-1 (sparsity 0.8) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-1-8.pt
+2024-10-17 01:33:30,325 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer1): ModuleDict(
+    (0): ModuleDict(
+      (relu2): ReLU()
+    )
+    (1): ModuleDict(
+      (conv1): Conv2d(64, 13, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(13, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(13, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:30,437 - block_extractor.py[28] - INFO: save pruned block block-2 (sparsity 0.0) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-2-0.pt
+2024-10-17 01:33:30,437 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer2): ModuleDict(
+    (0): ModuleDict(
+      (conv1): Conv2d(64, 128, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+    )
+  )
+)
+2024-10-17 01:33:31,086 - block_extractor.py[28] - INFO: save pruned block block-2 (sparsity 0.2) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-2-2.pt
+2024-10-17 01:33:31,087 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer2): ModuleDict(
+    (0): ModuleDict(
+      (conv1): Conv2d(64, 103, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(103, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(103, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+    )
+  )
+)
+2024-10-17 01:33:31,715 - block_extractor.py[28] - INFO: save pruned block block-2 (sparsity 0.4) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-2-4.pt
+2024-10-17 01:33:31,716 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer2): ModuleDict(
+    (0): ModuleDict(
+      (conv1): Conv2d(64, 77, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(77, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(77, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+    )
+  )
+)
+2024-10-17 01:33:32,330 - block_extractor.py[28] - INFO: save pruned block block-2 (sparsity 0.6) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-2-6.pt
+2024-10-17 01:33:32,330 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer2): ModuleDict(
+    (0): ModuleDict(
+      (conv1): Conv2d(64, 52, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(52, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(52, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+    )
+  )
+)
+2024-10-17 01:33:32,949 - block_extractor.py[28] - INFO: save pruned block block-2 (sparsity 0.8) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-2-8.pt
+2024-10-17 01:33:32,949 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer2): ModuleDict(
+    (0): ModuleDict(
+      (conv1): Conv2d(64, 26, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(26, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(26, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+    )
+  )
+)
+2024-10-17 01:33:33,066 - block_extractor.py[28] - INFO: save pruned block block-3 (sparsity 0.0) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-3-0.pt
+2024-10-17 01:33:33,066 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer2): ModuleDict(
+    (0): ModuleDict(
+      (relu2): ReLU()
+    )
+    (1): ModuleDict(
+      (conv1): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:33,855 - block_extractor.py[28] - INFO: save pruned block block-3 (sparsity 0.2) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-3-2.pt
+2024-10-17 01:33:33,855 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer2): ModuleDict(
+    (0): ModuleDict(
+      (relu2): ReLU()
+    )
+    (1): ModuleDict(
+      (conv1): Conv2d(128, 103, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(103, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(103, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:34,630 - block_extractor.py[28] - INFO: save pruned block block-3 (sparsity 0.4) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-3-4.pt
+2024-10-17 01:33:34,630 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer2): ModuleDict(
+    (0): ModuleDict(
+      (relu2): ReLU()
+    )
+    (1): ModuleDict(
+      (conv1): Conv2d(128, 77, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(77, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(77, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:35,396 - block_extractor.py[28] - INFO: save pruned block block-3 (sparsity 0.6) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-3-6.pt
+2024-10-17 01:33:35,397 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer2): ModuleDict(
+    (0): ModuleDict(
+      (relu2): ReLU()
+    )
+    (1): ModuleDict(
+      (conv1): Conv2d(128, 52, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(52, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(52, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:36,183 - block_extractor.py[28] - INFO: save pruned block block-3 (sparsity 0.8) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-3-8.pt
+2024-10-17 01:33:36,184 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer2): ModuleDict(
+    (0): ModuleDict(
+      (relu2): ReLU()
+    )
+    (1): ModuleDict(
+      (conv1): Conv2d(128, 26, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(26, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(26, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:36,359 - block_extractor.py[28] - INFO: save pruned block block-4 (sparsity 0.0) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-4-0.pt
+2024-10-17 01:33:36,360 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer3): ModuleDict(
+    (0): ModuleDict(
+      (conv1): Conv2d(128, 256, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+    )
+  )
+)
+2024-10-17 01:33:37,079 - block_extractor.py[28] - INFO: save pruned block block-4 (sparsity 0.2) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-4-2.pt
+2024-10-17 01:33:37,079 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer3): ModuleDict(
+    (0): ModuleDict(
+      (conv1): Conv2d(128, 205, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(205, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(205, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+    )
+  )
+)
+2024-10-17 01:33:37,727 - block_extractor.py[28] - INFO: save pruned block block-4 (sparsity 0.4) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-4-4.pt
+2024-10-17 01:33:37,728 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer3): ModuleDict(
+    (0): ModuleDict(
+      (conv1): Conv2d(128, 154, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(154, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(154, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+    )
+  )
+)
+2024-10-17 01:33:38,377 - block_extractor.py[28] - INFO: save pruned block block-4 (sparsity 0.6) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-4-6.pt
+2024-10-17 01:33:38,377 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer3): ModuleDict(
+    (0): ModuleDict(
+      (conv1): Conv2d(128, 103, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(103, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(103, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+    )
+  )
+)
+2024-10-17 01:33:39,028 - block_extractor.py[28] - INFO: save pruned block block-4 (sparsity 0.8) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-4-8.pt
+2024-10-17 01:33:39,028 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer3): ModuleDict(
+    (0): ModuleDict(
+      (conv1): Conv2d(128, 52, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(52, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(52, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+    )
+  )
+)
+2024-10-17 01:33:39,158 - block_extractor.py[28] - INFO: save pruned block block-5 (sparsity 0.0) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-5-0.pt
+2024-10-17 01:33:39,158 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer3): ModuleDict(
+    (0): ModuleDict(
+      (relu2): ReLU()
+    )
+    (1): ModuleDict(
+      (conv1): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:39,961 - block_extractor.py[28] - INFO: save pruned block block-5 (sparsity 0.2) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-5-2.pt
+2024-10-17 01:33:39,962 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer3): ModuleDict(
+    (0): ModuleDict(
+      (relu2): ReLU()
+    )
+    (1): ModuleDict(
+      (conv1): Conv2d(256, 205, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(205, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(205, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:40,850 - block_extractor.py[28] - INFO: save pruned block block-5 (sparsity 0.4) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-5-4.pt
+2024-10-17 01:33:40,850 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer3): ModuleDict(
+    (0): ModuleDict(
+      (relu2): ReLU()
+    )
+    (1): ModuleDict(
+      (conv1): Conv2d(256, 154, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(154, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(154, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:41,695 - block_extractor.py[28] - INFO: save pruned block block-5 (sparsity 0.6) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-5-6.pt
+2024-10-17 01:33:41,695 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer3): ModuleDict(
+    (0): ModuleDict(
+      (relu2): ReLU()
+    )
+    (1): ModuleDict(
+      (conv1): Conv2d(256, 103, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(103, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(103, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:42,488 - block_extractor.py[28] - INFO: save pruned block block-5 (sparsity 0.8) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-5-8.pt
+2024-10-17 01:33:42,488 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer3): ModuleDict(
+    (0): ModuleDict(
+      (relu2): ReLU()
+    )
+    (1): ModuleDict(
+      (conv1): Conv2d(256, 52, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(52, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(52, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:42,630 - block_extractor.py[28] - INFO: save pruned block block-6 (sparsity 0.0) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-6-0.pt
+2024-10-17 01:33:42,631 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer4): ModuleDict(
+    (0): ModuleDict(
+      (conv1): Conv2d(256, 512, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+    )
+  )
+)
+2024-10-17 01:33:43,527 - block_extractor.py[28] - INFO: save pruned block block-6 (sparsity 0.2) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-6-2.pt
+2024-10-17 01:33:43,527 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer4): ModuleDict(
+    (0): ModuleDict(
+      (conv1): Conv2d(256, 410, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(410, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(410, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+    )
+  )
+)
+2024-10-17 01:33:44,235 - block_extractor.py[28] - INFO: save pruned block block-6 (sparsity 0.4) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-6-4.pt
+2024-10-17 01:33:44,236 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer4): ModuleDict(
+    (0): ModuleDict(
+      (conv1): Conv2d(256, 308, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(308, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(308, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+    )
+  )
+)
+2024-10-17 01:33:45,029 - block_extractor.py[28] - INFO: save pruned block block-6 (sparsity 0.6) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-6-6.pt
+2024-10-17 01:33:45,029 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer4): ModuleDict(
+    (0): ModuleDict(
+      (conv1): Conv2d(256, 205, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(205, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(205, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+    )
+  )
+)
+2024-10-17 01:33:45,730 - block_extractor.py[28] - INFO: save pruned block block-6 (sparsity 0.8) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-6-8.pt
+2024-10-17 01:33:45,730 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer4): ModuleDict(
+    (0): ModuleDict(
+      (conv1): Conv2d(256, 103, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(103, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(103, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+    )
+  )
+)
+2024-10-17 01:33:45,932 - block_extractor.py[28] - INFO: save pruned block block-7 (sparsity 0.0) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-7-0.pt
+2024-10-17 01:33:45,932 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer4): ModuleDict(
+    (0): ModuleDict(
+      (relu2): ReLU()
+    )
+    (1): ModuleDict(
+      (conv1): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:46,875 - block_extractor.py[28] - INFO: save pruned block block-7 (sparsity 0.2) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-7-2.pt
+2024-10-17 01:33:46,875 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer4): ModuleDict(
+    (0): ModuleDict(
+      (relu2): ReLU()
+    )
+    (1): ModuleDict(
+      (conv1): Conv2d(512, 410, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(410, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(410, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:47,795 - block_extractor.py[28] - INFO: save pruned block block-7 (sparsity 0.4) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-7-4.pt
+2024-10-17 01:33:47,795 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer4): ModuleDict(
+    (0): ModuleDict(
+      (relu2): ReLU()
+    )
+    (1): ModuleDict(
+      (conv1): Conv2d(512, 308, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(308, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(308, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:48,684 - block_extractor.py[28] - INFO: save pruned block block-7 (sparsity 0.6) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-7-6.pt
+2024-10-17 01:33:48,684 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer4): ModuleDict(
+    (0): ModuleDict(
+      (relu2): ReLU()
+    )
+    (1): ModuleDict(
+      (conv1): Conv2d(512, 205, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(205, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(205, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
+2024-10-17 01:33:49,559 - block_extractor.py[28] - INFO: save pruned block block-7 (sparsity 0.8) in results/legodnn/image_classification/resnet18_cifar100_0-125/compressed/block-7-8.pt
+2024-10-17 01:33:49,559 - block_extractor.py[29] - DEBUG: LegoDNNBlock(
+  (layer4): ModuleDict(
+    (0): ModuleDict(
+      (relu2): ReLU()
+    )
+    (1): ModuleDict(
+      (conv1): Conv2d(512, 103, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn1): BatchNorm2d(103, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (relu1): ReLU()
+      (conv2): Conv2d(103, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+      (bn2): BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+  )
+)
