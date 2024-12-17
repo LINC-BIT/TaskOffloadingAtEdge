@@ -1,0 +1,185 @@
+2024-11-01 14:43:59,596 - log.py[38] - DEBUG: entry file content: ---------------------------------
+2024-11-01 14:43:59,596 - log.py[39] - DEBUG: 
+import glob
+import os
+import argparse
+import time
+import sys
+
+sys.path.append(os.getcwd())
+
+from cv_task.image_classification.cifar.models import resnet18
+import torch
+from legodnn.block_detection.model_topology_extraction import topology_extraction
+from legodnn.presets.common_detection_manager_1204_new import CommonDetectionManager
+from legodnn.model_manager.common_model_manager import CommonModelManager
+from legodnn.presets.auto_block_manager import AutoBlockManager
+from offload.deployment import OptimalRuntime, BlockProfiler
+from legodnn.utils.dl.common.model import get_model_size
+from offload.net.client import LegodnnProfilesClient, LegodnnSendingClient, MoniterBWupClient, MoniterBWdownClient
+from apscheduler.schedulers.background import BackgroundScheduler
+import logging
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--ip', type=str, help='ip地址', default='10.1.114.109')
+parser.add_argument('--port', type=int, help='端口号', default=9999)
+parser.add_argument('--path', type=str, help='保存路径', default='./results/legodnn')
+parser.add_argument('--edge_device', type=str, help='使用设备', default='cpu')
+parser.add_argument('--cloud_device', type=str, help='使用设备', default='cuda')
+args = parser.parse_args()
+
+logging.getLogger('apscheduler').setLevel(logging.WARNING)
+
+def start_monitor_bwup(ip):
+    monitor_ser = MoniterBWupClient(ip=ip, port=6666)
+    monitor_ser.start()
+    # monitor_ser.join()
+
+def scheduler_for_bandwidth_monitor_bwup(ip, interval):
+    # 创建调度器
+    scheduler = BackgroundScheduler(timezone='MST')
+    scheduler.add_job(start_monitor_bwup, 'interval', seconds=interval, args=[ip])
+    scheduler.start()
+
+def start_monitor_bwdown(ip):
+    monitor_cli = MoniterBWdownClient(ip=ip, port=6667)
+    monitor_cli.start()
+
+def scheduler_for_bandwidth_monitor_bwdown(ip, interval):
+    # 创建调度器
+    scheduler = BackgroundScheduler(timezone='MST')
+    # 每隔 interval 秒就创建一个带宽监视进程 用来获取最新带宽
+    scheduler.add_job(start_monitor_bwdown, 'interval', seconds=interval, args=[ip])
+    scheduler.start()
+
+if __name__ == '__main__':
+    cv_task = 'image_classification'
+    dataset_name = 'cifar100'
+    model_name = 'resnet18'
+    method = 'legodnn'
+    edge_device = args.edge_device
+    cloud_device = args.cloud_device
+    compress_layer_max_ratio = 0.125
+    model_input_size = (1, 3, 32, 32)
+
+    block_sparsity = [0.0, 0.2, 0.4, 0.6, 0.8]
+    root_path = os.path.join(args.path, cv_task,
+                             model_name + '_' + dataset_name + '_' + str(compress_layer_max_ratio).replace('.', '-'))
+
+    compressed_blocks_dir_path = root_path + '/compressed'
+    trained_blocks_dir_path = root_path + '/trained'
+    descendant_models_dir_path = root_path + '/descendant'
+    offload_dir_path = root_path + '/offload'
+    block_training_max_epoch = 65
+    test_sample_num = 100
+    ip = args.ip
+    # ip = '127.0.0.1'
+    port = args.port
+
+    # checkpoint = '/data/gxy/legodnn-auto-on-cv-models/cv_task_model/image_classification/cifar100/resnet18/2024-10-14/20-15-10/resnet18.pth'
+    teacher_model = resnet18(num_classes=100).to(edge_device)
+    # teacher_model.load_state_dict(torch.load(checkpoint)['net'])
+
+    monitor_cli = MoniterBWupClient(ip=ip, port=6666, first=True)
+    monitor_cli.start()
+    monitor_cli.join()
+
+    monitor_cli = MoniterBWdownClient(ip=ip, port=6667, first=True)
+    monitor_cli.start()
+    monitor_cli.join()
+
+    scheduler_for_bandwidth_monitor_bwup(ip, 3)
+    scheduler_for_bandwidth_monitor_bwdown(ip, 3)
+
+    print('\033[1;36m-------------------------------->    BUILD LEGODNN GRAPH\033[0m')
+    model_graph = topology_extraction(teacher_model, model_input_size, device=edge_device, mode='unpack')
+    model_graph.print_ordered_node()
+
+    print('\033[1;36m-------------------------------->    START BLOCK DETECTION\033[0m')
+    detection_manager = CommonDetectionManager(model_graph, max_ratio=compress_layer_max_ratio)
+    detection_manager.detection_all_blocks()
+    detection_manager.print_all_blocks()
+
+    model_manager = CommonModelManager()
+    block_manager = AutoBlockManager(block_sparsity, detection_manager, model_manager)
+
+    print('\033[1;36m-------------------------------->    CHECK BLOCK PROFILES\033[0m')
+    p_client = LegodnnProfilesClient(ip, 9000, trained_blocks_dir_path)
+    p_client.start()
+    p_client.join()
+
+    print('\033[1;36m-------------------------------->    START BLOCK PROFILING\033[0m')
+    edge_block_profiler = BlockProfiler(block_manager, model_manager, trained_blocks_dir_path, offload_dir_path, test_sample_num, model_input_size, edge_device, 'edge')
+    edge_block_profiler.profile_all_blocks()
+
+    print('\033[1;36m-------------------------------->    TRANSMIT EDGE PROFILES\033[0m')
+    s_client = LegodnnSendingClient(ip, 9001, offload_dir_path)
+    s_client.start()
+    s_client.join()
+
+    while True:
+        time.sleep(1)
+
+    # optimal_runtime = OptimalRuntime(trained_blocks_dir_path, offload_dir_path, model_input_size, block_manager, model_manager, device)
+    # model_size_min = get_model_size(torch.load(os.path.join(compressed_blocks_dir_path, 'model_frame.pt'))) / 1024 ** 2
+    # model_size_max = get_model_size(teacher_model) / 1024 ** 2 + 1
+
+2024-11-01 14:43:59,598 - log.py[40] - DEBUG: entry file content: ---------------------------------
+2024-11-01 14:44:11,838 - deployment.py[124] - INFO: raw block info: {"index": 0, "id": "block-0", "latency": 0.0024714016914367675}
+2024-11-01 14:44:12,322 - deployment.py[124] - INFO: raw block info: {"index": 1, "id": "block-1", "latency": 0.0023027610778808593}
+2024-11-01 14:44:12,631 - deployment.py[124] - INFO: raw block info: {"index": 2, "id": "block-2", "latency": 0.0015096783638000489}
+2024-11-01 14:44:13,092 - deployment.py[124] - INFO: raw block info: {"index": 3, "id": "block-3", "latency": 0.002327585220336914}
+2024-11-01 14:44:16,190 - deployment.py[124] - INFO: raw block info: {"index": 4, "id": "block-4", "latency": 0.0151336932182312}
+2024-11-01 14:44:21,644 - deployment.py[124] - INFO: raw block info: {"index": 5, "id": "block-5", "latency": 0.01715153217315674}
+2024-11-01 14:44:22,500 - deployment.py[124] - INFO: raw block info: {"index": 6, "id": "block-6", "latency": 0.0012209534645080567}
+2024-11-01 14:44:23,506 - deployment.py[124] - INFO: raw block info: {"index": 7, "id": "block-7", "latency": 0.002077233791351318}
+2024-11-01 14:44:23,512 - pure_runtime.py[26] - INFO: load blocks with sparsity [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+2024-11-01 14:44:23,517 - pure_runtime.py[42] - DEBUG: load 0th block (block-0) (sparsity 0.0) from file
+2024-11-01 14:44:23,522 - pure_runtime.py[42] - DEBUG: load 1th block (block-1) (sparsity 0.0) from file
+2024-11-01 14:44:23,526 - pure_runtime.py[42] - DEBUG: load 2th block (block-2) (sparsity 0.0) from file
+2024-11-01 14:44:23,532 - pure_runtime.py[42] - DEBUG: load 3th block (block-3) (sparsity 0.0) from file
+2024-11-01 14:44:23,539 - pure_runtime.py[42] - DEBUG: load 4th block (block-4) (sparsity 0.0) from file
+2024-11-01 14:44:23,548 - pure_runtime.py[42] - DEBUG: load 5th block (block-5) (sparsity 0.0) from file
+2024-11-01 14:44:23,564 - pure_runtime.py[42] - DEBUG: load 6th block (block-6) (sparsity 0.0) from file
+2024-11-01 14:44:23,584 - pure_runtime.py[42] - DEBUG: load 7th block (block-7) (sparsity 0.0) from file
+2024-11-01 14:44:31,349 - deployment.py[187] - INFO: block block-0 (sparsity 0.0) latency rel drop: 0.000% (0.001s -> 0.001s)
+2024-11-01 14:44:31,672 - deployment.py[187] - INFO: block block-0 (sparsity 0.2) latency rel drop: -14.372% (0.001s -> 0.002s)
+2024-11-01 14:44:31,949 - deployment.py[187] - INFO: block block-0 (sparsity 0.4) latency rel drop: 54.432% (0.001s -> 0.001s)
+2024-11-01 14:44:32,244 - deployment.py[187] - INFO: block block-0 (sparsity 0.6) latency rel drop: -1.464% (0.001s -> 0.001s)
+2024-11-01 14:44:32,506 - deployment.py[187] - INFO: block block-0 (sparsity 0.8) latency rel drop: 49.723% (0.001s -> 0.001s)
+2024-11-01 14:44:33,103 - deployment.py[187] - INFO: block block-1 (sparsity 0.0) latency rel drop: 0.000% (0.001s -> 0.001s)
+2024-11-01 14:44:33,380 - deployment.py[187] - INFO: block block-1 (sparsity 0.2) latency rel drop: 3.413% (0.001s -> 0.001s)
+2024-11-01 14:44:33,661 - deployment.py[187] - INFO: block block-1 (sparsity 0.4) latency rel drop: 4.270% (0.001s -> 0.001s)
+2024-11-01 14:44:33,922 - deployment.py[187] - INFO: block block-1 (sparsity 0.6) latency rel drop: 6.132% (0.001s -> 0.001s)
+2024-11-01 14:44:34,127 - deployment.py[187] - INFO: block block-1 (sparsity 0.8) latency rel drop: 58.249% (0.001s -> 0.001s)
+2024-11-01 14:44:34,482 - deployment.py[187] - INFO: block block-2 (sparsity 0.0) latency rel drop: 0.000% (0.001s -> 0.001s)
+2024-11-01 14:44:34,662 - deployment.py[187] - INFO: block block-2 (sparsity 0.2) latency rel drop: 13.500% (0.001s -> 0.001s)
+2024-11-01 14:44:34,829 - deployment.py[187] - INFO: block block-2 (sparsity 0.4) latency rel drop: 24.657% (0.001s -> 0.001s)
+2024-11-01 14:44:34,986 - deployment.py[187] - INFO: block block-2 (sparsity 0.6) latency rel drop: 5.840% (0.001s -> 0.001s)
+2024-11-01 14:44:35,099 - deployment.py[187] - INFO: block block-2 (sparsity 0.8) latency rel drop: 36.957% (0.001s -> 0.000s)
+2024-11-01 14:44:35,661 - deployment.py[187] - INFO: block block-3 (sparsity 0.0) latency rel drop: 0.000% (0.001s -> 0.001s)
+2024-11-01 14:44:35,949 - deployment.py[187] - INFO: block block-3 (sparsity 0.2) latency rel drop: 3.358% (0.001s -> 0.001s)
+2024-11-01 14:44:36,199 - deployment.py[187] - INFO: block block-3 (sparsity 0.4) latency rel drop: 45.894% (0.001s -> 0.001s)
+2024-11-01 14:44:36,376 - deployment.py[187] - INFO: block block-3 (sparsity 0.6) latency rel drop: 59.689% (0.001s -> 0.001s)
+2024-11-01 14:44:36,556 - deployment.py[187] - INFO: block block-3 (sparsity 0.8) latency rel drop: 58.229% (0.001s -> 0.001s)
+2024-11-01 14:44:37,083 - deployment.py[187] - INFO: block block-4 (sparsity 0.0) latency rel drop: 0.000% (0.001s -> 0.001s)
+2024-11-01 14:44:37,245 - deployment.py[187] - INFO: block block-4 (sparsity 0.2) latency rel drop: 46.719% (0.001s -> 0.001s)
+2024-11-01 14:44:37,398 - deployment.py[187] - INFO: block block-4 (sparsity 0.4) latency rel drop: 44.402% (0.001s -> 0.001s)
+2024-11-01 14:44:37,531 - deployment.py[187] - INFO: block block-4 (sparsity 0.6) latency rel drop: 47.113% (0.001s -> 0.001s)
+2024-11-01 14:44:37,659 - deployment.py[187] - INFO: block block-4 (sparsity 0.8) latency rel drop: 53.221% (0.001s -> 0.001s)
+2024-11-01 14:44:38,106 - deployment.py[187] - INFO: block block-5 (sparsity 0.0) latency rel drop: 0.000% (0.001s -> 0.001s)
+2024-11-01 14:44:38,303 - deployment.py[187] - INFO: block block-5 (sparsity 0.2) latency rel drop: 18.181% (0.001s -> 0.001s)
+2024-11-01 14:44:38,510 - deployment.py[187] - INFO: block block-5 (sparsity 0.4) latency rel drop: 13.637% (0.001s -> 0.001s)
+2024-11-01 14:44:38,718 - deployment.py[187] - INFO: block block-5 (sparsity 0.6) latency rel drop: 4.547% (0.001s -> 0.001s)
+2024-11-01 14:44:38,922 - deployment.py[187] - INFO: block block-5 (sparsity 0.8) latency rel drop: 4.547% (0.001s -> 0.001s)
+2024-11-01 14:44:39,226 - deployment.py[187] - INFO: block block-6 (sparsity 0.0) latency rel drop: 0.000% (0.001s -> 0.001s)
+2024-11-01 14:44:39,362 - deployment.py[187] - INFO: block block-6 (sparsity 0.2) latency rel drop: 16.506% (0.001s -> 0.001s)
+2024-11-01 14:44:39,480 - deployment.py[187] - INFO: block block-6 (sparsity 0.4) latency rel drop: 23.658% (0.001s -> 0.001s)
+2024-11-01 14:44:39,612 - deployment.py[187] - INFO: block block-6 (sparsity 0.6) latency rel drop: 18.677% (0.001s -> 0.001s)
+2024-11-01 14:44:39,723 - deployment.py[187] - INFO: block block-6 (sparsity 0.8) latency rel drop: 42.648% (0.001s -> 0.000s)
+2024-11-01 14:44:40,225 - deployment.py[187] - INFO: block block-7 (sparsity 0.0) latency rel drop: 0.000% (0.001s -> 0.001s)
+2024-11-01 14:44:40,464 - deployment.py[187] - INFO: block block-7 (sparsity 0.2) latency rel drop: 43.084% (0.001s -> 0.001s)
+2024-11-01 14:44:40,682 - deployment.py[187] - INFO: block block-7 (sparsity 0.4) latency rel drop: 51.005% (0.001s -> 0.001s)
+2024-11-01 14:44:40,879 - deployment.py[187] - INFO: block block-7 (sparsity 0.6) latency rel drop: 42.798% (0.001s -> 0.001s)
+2024-11-01 14:44:41,062 - deployment.py[187] - INFO: block block-7 (sparsity 0.8) latency rel drop: 45.394% (0.001s -> 0.001s)

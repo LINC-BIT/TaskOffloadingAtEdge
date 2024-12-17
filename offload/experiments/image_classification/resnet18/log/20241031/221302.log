@@ -1,0 +1,145 @@
+2024-10-31 22:13:02,882 - log.py[38] - DEBUG: entry file content: ---------------------------------
+2024-10-31 22:13:02,882 - log.py[39] - DEBUG: 
+import glob
+import os
+import argparse
+from cv_task.image_classification.cifar.models import resnet18
+import torch
+import time
+from legodnn.block_detection.model_topology_extraction import topology_extraction
+from legodnn.presets.common_detection_manager_1204_new import CommonDetectionManager
+from legodnn.model_manager.common_model_manager import CommonModelManager
+from legodnn.presets.auto_block_manager import AutoBlockManager
+from offload.deployment import OptimalRuntime, BlockProfiler
+from legodnn.utils.dl.common.model import get_model_size
+from legodnn.utils.common.log import logger
+from offload.net.server import LegodnnProfileServer, LegodnnRecvingServer, MoniterBWupServer, MoniterBWdowmServer
+from apscheduler.schedulers.background import BackgroundScheduler
+import multiprocessing as mp
+import logging
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--ip', type=str, help='ip地址', default='10.1.114.109')
+parser.add_argument('--port', type=int, help='端口号', default=9999)
+parser.add_argument('--path', type=str, help='保存路径', default='./results/legodnn')
+parser.add_argument('--edge_device', type=str, help='使用设备', default='cpu')
+parser.add_argument('--cloud_device', type=str, help='使用设备', default='cuda')
+args = parser.parse_args()
+
+logging.getLogger('apscheduler').setLevel(logging.WARNING)
+
+def start_monitor_bwup(ip, bw):
+    monitor_ser = MoniterBWupServer(ip=ip, port=6666, bw=bw)
+    monitor_ser.start()
+    # monitor_ser.join()
+    logger.info(f"bandwidth monitor : get up bandwidth value : {bw.value:.3f} MB/s")
+
+def scheduler_for_bandwidth_monitor_bwup(ip, interval, bw):
+    # 创建调度器
+    scheduler = BackgroundScheduler(timezone='MST')
+    scheduler.add_job(start_monitor_bwup, 'interval', seconds=interval, args=[ip, bw])
+    scheduler.start()
+
+def start_monitor_bwdown(ip, bandwidth_value):
+    monitor_cli = MoniterBWdowmServer(ip=ip, port=6667, bw=bandwidth_value)
+    monitor_cli.start()
+    logger.info(f"bandwidth monitor : get down bandwidth value : {bandwidth_value.value:.3f} MB/s")
+
+def scheduler_for_bandwidth_monitor_bwdown(ip, interval, bandwidth_value):
+    # 创建调度器
+    scheduler = BackgroundScheduler(timezone='MST')
+    # 每隔 interval 秒就创建一个带宽监视进程 用来获取最新带宽
+    scheduler.add_job(start_monitor_bwdown, 'interval', seconds=interval, args=[ip,bandwidth_value])
+    scheduler.start()
+
+if __name__ == '__main__':
+    cv_task = 'image_classification'
+    dataset_name = 'cifar100'
+    model_name = 'resnet18'
+    method = 'legodnn'
+    edge_device = args.edge_device
+    cloud_device = args.cloud_device
+    compress_layer_max_ratio = 0.125
+    model_input_size = (1, 3, 32, 32)
+
+    block_sparsity = [0.0, 0.2, 0.4, 0.6, 0.8]
+    root_path = os.path.join(args.path, cv_task,
+                             model_name + '_' + dataset_name + '_' + str(compress_layer_max_ratio).replace('.', '-'))
+
+    compressed_blocks_dir_path = root_path + '/compressed'
+    trained_blocks_dir_path = root_path + '/trained'
+    descendant_models_dir_path = root_path + '/descendant'
+    offload_dir_path = root_path + '/offload'
+    block_training_max_epoch = 65
+    test_sample_num = 100
+    # ip = args.ip
+    ip = '127.0.0.1'
+    port = args.port
+
+    bwup = mp.Value('d', 1.)
+    bwdown = mp.Value('d', 1.)
+
+    # checkpoint = '/data/gxy/legodnn-auto-on-cv-models/cv_task_model/image_classification/cifar100/resnet18/2024-10-14/20-15-10/resnet18.pth'
+    teacher_model = resnet18(num_classes=100).to(edge_device)
+    # teacher_model.load_state_dict(torch.load(checkpoint)['net'])
+
+    # monitor_ser = MoniterBWupServer(ip=ip, port=6666, bw=bwup)
+    # monitor_ser.start()
+    # monitor_ser.join()
+    # logger.info(f"bandwidth monitor : get up bandwidth value : {bwup.value:.3f} MB/s")
+    #
+    # monitor_cli = MoniterBWdowmServer(ip=ip, port=6667, bw=bwdown)
+    # monitor_cli.start()
+    # monitor_cli.join()
+    # logger.info(f"bandwidth monitor : get down bandwidth value : {bwdown.value:.3f} MB/s")
+    #
+    # scheduler_for_bandwidth_monitor_bwdown(ip, 3, bwdown)
+    # scheduler_for_bandwidth_monitor_bwup(ip, 3, bwup)
+
+    print('\033[1;36m-------------------------------->    BUILD LEGODNN GRAPH\033[0m')
+    model_graph = topology_extraction(teacher_model, model_input_size, device=edge_device, mode='unpack')
+    model_graph.print_ordered_node()
+
+    print('\033[1;36m-------------------------------->    START BLOCK DETECTION\033[0m')
+    detection_manager = CommonDetectionManager(model_graph, max_ratio=compress_layer_max_ratio)
+    detection_manager.detection_all_blocks()
+    detection_manager.print_all_blocks()
+
+    model_manager = CommonModelManager()
+    block_manager = AutoBlockManager(block_sparsity, detection_manager, model_manager)
+
+    # print('\033[1;36m-------------------------------->    TRANSMIT BLOCK PROFILES\033[0m')
+    # p_client = LegodnnProfileServer(ip, 9000, block_manager, trained_blocks_dir_path)
+    # p_client.start()
+    # p_client.join()
+
+    # print('\033[1;36m-------------------------------->    START BLOCK PROFILING\033[0m')
+    # cloud_block_profiler = BlockProfiler(block_manager, model_manager, trained_blocks_dir_path, offload_dir_path,
+    #                                     test_sample_num, model_input_size, cloud_device, 'cloud')
+    # cloud_block_profiler.profile_all_blocks()
+
+    # print('\033[1;36m-------------------------------->    OBTAIN EDGE PROFILES\033[0m')
+    # r_client = LegodnnRecvingServer(ip, 9001, offload_dir_path)
+    # r_client.start()
+    # r_client.join()
+
+    print('\033[1;36m-------------------------------->    START BLOCK SELECTING\033[0m')
+    optimal_runtime = OptimalRuntime(trained_blocks_dir_path, offload_dir_path, model_input_size, block_manager, model_manager, bwdown=bwdown, bwup=bwup, device=cloud_device)
+    model_size_min = get_model_size(torch.load(os.path.join(compressed_blocks_dir_path, 'model_frame.pt'))) / 1024 ** 2
+    model_size_max = get_model_size(teacher_model) / 1024 ** 2 + 1
+    optimal_runtime.update_model(20, (model_size_max + model_size_min) * 0.4)
+2024-10-31 22:13:02,882 - log.py[40] - DEBUG: entry file content: ---------------------------------
+2024-10-31 22:13:06,776 - deployment.py[216] - INFO: init adaptive model runtime
+2024-10-31 22:13:06,797 - deployment.py[276] - INFO: load blocks metrics
+2024-10-31 22:13:06,851 - deployment.py[317] - INFO: load model metrics
+2024-10-31 22:13:07,914 - deployment.py[335] - INFO: load sparest blocks for initializing model
+2024-10-31 22:13:07,914 - pure_runtime.py[26] - INFO: load blocks with sparsity [0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8]
+2024-10-31 22:13:07,914 - pure_runtime.py[42] - DEBUG: load 0th block (block-0) (sparsity 0.8) from file
+2024-10-31 22:13:07,914 - pure_runtime.py[42] - DEBUG: load 1th block (block-1) (sparsity 0.8) from file
+2024-10-31 22:13:07,924 - pure_runtime.py[42] - DEBUG: load 2th block (block-2) (sparsity 0.8) from file
+2024-10-31 22:13:07,924 - pure_runtime.py[42] - DEBUG: load 3th block (block-3) (sparsity 0.8) from file
+2024-10-31 22:13:07,924 - pure_runtime.py[42] - DEBUG: load 4th block (block-4) (sparsity 0.8) from file
+2024-10-31 22:13:07,934 - pure_runtime.py[42] - DEBUG: load 5th block (block-5) (sparsity 0.8) from file
+2024-10-31 22:13:07,944 - pure_runtime.py[42] - DEBUG: load 6th block (block-6) (sparsity 0.8) from file
+2024-10-31 22:13:07,944 - pure_runtime.py[42] - DEBUG: load 7th block (block-7) (sparsity 0.8) from file
+2024-10-31 22:13:08,035 - deployment.py[390] - INFO: cur max inference time: 20.000000s, cur available max memory: 18787048.8B (17.917MB), try to adapt blocks
