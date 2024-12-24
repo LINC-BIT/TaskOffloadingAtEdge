@@ -190,13 +190,13 @@
 	  运行服务端：
 	  
 	  ```shell
-	  python offload/experiments/image_classification/resnet18/resnet18_cloud.py --ip 127.0.0.1 --port 8000 --dataset cifar100 --cloud_device cpu
+	  python experiments/image_classification/resnet18/resnet18_cloud.py --ip 127.0.0.1 --port 8000 --dataset cifar100 --cloud_device cpu
 	  ```
 	  
 	  运行客户端：
 	  
 	  ```shell
-	  python offload/experiments/image_classification/resnet18/resnet18_edge.py --ip 127.0.0.1 --port 8000 --dataset cifar100 --edge_device cpu
+	  python experiments/image_classification/resnet18/resnet18_edge.py --ip 127.0.0.1 --port 8000 --dataset cifar100 --edge_device cpu
 	  ```
 
 #### 5.1.2 实验结果
@@ -251,13 +251,13 @@
      运行服务端：
 
      ```shell
-     python offload/experiments/image_classification/resnet18/resnet18_cloud.py --ip 127.0.0.1 --port 8000 --dataset cifar100 --cloud_device cpu
+     python experiments/image_classification/resnet18/resnet18_cloud.py --ip 127.0.0.1 --port 8000 --dataset cifar100 --cloud_device cpu
      ```
 
      运行客户端：
 
      ```shell
-     python offload/experiments/image_classification/resnet18/resnet18_edge.py --ip 127.0.0.1 --port 8000 --dataset cifar100 --edge_device cpu
+     python experiments/image_classification/resnet18/resnet18_edge.py --ip 127.0.0.1 --port 8000 --dataset cifar100 --edge_device cpu
      ```
 
 #### 5.2.2 实验结果
