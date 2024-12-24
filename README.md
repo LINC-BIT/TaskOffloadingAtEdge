@@ -2,7 +2,7 @@
 
 [English]()(待更新) | 简体中文
 
-![图片1](C:\Users\ASUS\Desktop\图片1.png)
+![图片1](./imgs/1.png)
 
 ## Table of contents
 
@@ -203,7 +203,7 @@
 
 - **LegoDNN和DDPG-based DEC-DNN-IO的随任务进行的延迟变化曲线如下图所示。**
 
-![img](file:///C:\Users\ASUS\AppData\Local\Temp\ksohtml194984\wps1.jpg) 
+![img](./imgs/2.jpg) 
 
 - **LegoDNN和DDPG-based DEC-DNN-IO之间的平均mFLOPs、平均模型大小和平均延迟对比如下表所示。**
 
@@ -266,7 +266,7 @@
 
  
 
-![img](file:///C:\Users\ASUS\AppData\Local\Temp\ksohtml194984\wps2.jpg) 
+![img](./imgs/3.jpg) 
 
 - **LegoDNN和DDPG-based DEC-DNN-IO之间的平均mFLOPs、平均模型大小和平均延迟对比如下表所示。**
 
