@@ -22,8 +22,9 @@ from offload.experiments.image_classification.resnet18.resnet18_utils import get
 parser = argparse.ArgumentParser()
 parser.add_argument('--ip', type=str, help='ip地址', default='10.1.114.109')
 parser.add_argument('--port', type=int, help='端口号', default=9999)
-parser.add_argument('--path', type=str, help='保存路径', default='./results/legodnn')
-parser.add_argument('--edge_device', type=str, help='使用设备', default='cpu')
+parser.add_argument('--dataset', default='cifar100', type=str, help='dataset [cifar10, cifar100]')
+parser.add_argument('--acc_thres', default=0.763, type=float, help='准确率阈值')
+parser.add_argument('--compress_layer_max_ratio', default=0.2, type=float, help='LegoDNN压缩率')
 parser.add_argument('--cloud_device', type=str, help='使用设备', default='cpu')
 args = parser.parse_args()
 
@@ -67,7 +68,7 @@ def scheduler_for_device_monitor(fn, devices, latency_threshold, memory_threshol
         pass
 
 def scheduler_optimize_deployment(opt, flag, sta_opt, running_flag, deploy_infos):
-    # try:
+    try:
         while flag.value == 0:
             if running_flag.value == 1:
                 sta_opt.value = 0
@@ -76,32 +77,29 @@ def scheduler_optimize_deployment(opt, flag, sta_opt, running_flag, deploy_infos
                 sta_opt.value = 1
                 logger.info(deploy_infos['infos'])
                 time.sleep(30)
-    # except Exception:
-    #     pass
+    except Exception:
+        pass
 
 if __name__ == '__main__':
     torch.multiprocessing.set_start_method('spawn')
 
     cv_task = 'image_classification'
-    dataset_name = 'cifar100'
+    dataset_name = args.dataset
     model_name = 'resnet18'
     method = 'legodnn'
-    edge_device = args.edge_device
     cloud_device = args.cloud_device
-    compress_layer_max_ratio = 0.2
+    compress_layer_max_ratio = args.compress_layer_max_ratio
     model_input_size = (128, 3, 32, 32)
     block_sparsity = [0.0, 0.2, 0.4, 0.6, 0.8]
-    acc_thres = 0.763
-    used_cores = 20
+    acc_thres = args.acc_thres
 
-    root_path = os.path.join(args.path, cv_task,
+    root_path = os.path.join('./results', method, cv_task,
                              model_name + '_' + dataset_name + '_' + str(compress_layer_max_ratio).replace('.', '-'))
 
     compressed_blocks_dir_path = root_path + '/compressed'
     trained_blocks_dir_path = root_path + '/trained'
     descendant_models_dir_path = root_path + '/descendant'
     offload_dir_path = root_path + '/offload'
-    test_sample_num = 100
     ip = args.ip
     port = args.port
     device_monitor_run = mp.Value('b', 0)
@@ -110,9 +108,14 @@ if __name__ == '__main__':
     running_flag = mp.Value('b', 1)
 
     create_dir(offload_dir_path)
-    # checkpoint = '/data/gxy/legodnn-auto-on-cv-models/cv_task_model/image_classification/cifar100/resnet18/2024-10-14/20-15-10/resnet18.pth'
-    teacher_model = resnet18(num_classes=100).to(cloud_device)
-    # teacher_model.load_state_dict(torch.load(checkpoint)['net'])
+    
+    if dataset_name == 'cifar100':
+        teacher_model = resnet18(num_classes=100).to(cloud_device)
+        _, test_loader = CIFAR100Dataloader(test_batch_size=model_input_size[0])
+        # teacher_model.load_state_dict(torch.load(checkpoint)['net'])
+    else:
+        teacher_model = resnet18(num_classes=10).to(cloud_device)
+        _, test_loader = CIFAR100Dataloader(test_batch_size=model_input_size[0])
 
     di = Manager().dict()
     listener = MainServer(ip, port, di)
@@ -179,19 +182,8 @@ if __name__ == '__main__':
     # print(deploy_infos[0])
 
     print('\033[1;36m-------------------------------->    START BLOCK INFERENCE\033[0m')
-    # deploy_infos = {
-    #     'readable_sparsity': [0.0, 0.0, 0.2, 0.6, 0.2, 0.4, 0.4, 0.8],
-    #     # 'blocks_devices': ['cloud', 'cloud', 'cloud', 'cloud', 'cloud', 'cloud', 'cloud', 'cloud']
-    #     # 'blocks_devices': ['edge', 'edge', 'edge', 'edge', 'edge', 'edge', 'edge', 'edge']
-    #     # 'blocks_devices': ['cloud', 'edge', 'cloud', 'edge', 'cloud', 'edge', 'cloud', 'edge']
-    #     # 'blocks_devices': ['edge', 'cloud', 'edge', 'cloud', 'edge', 'cloud', 'edge', 'cloud']
-    #     # 'blocks_devices': ['cloud', 'edge', 'edge', 'cloud', 'edge', 'cloud', 'edge', 'cloud']
-    #     # 'blocks_devices': [0, 2, 2, 0, 0, 2, 1, 0]
-    #     'blocks_devices': [2, 0, 1, 2, 1, 2, 0, 1]
-    # }
     frame = getModelRootAndEnd(trained_blocks_dir_path, cloud_device)
     x = []
-    _, test_loader = CIFAR100Dataloader(test_batch_size=model_input_size[0])
 
     d_server = ResNetDeployServer(test_loader, frame, deploy_infos, block_manager, trained_blocks_dir_path,
                                   offload_dir_path, cloud_device, start_opt, running_flag, di, bwdowns, bwups)

@@ -162,10 +162,9 @@ class ResNetDeployServer(MultiDeployServer):
         json.dump([acc_array, l_array, mem_array, flops_array], open(os.path.join(self._offload_path, 'legodnn.json'), 'w'))
 
 class ResNetDeployClient(MultiDeployClient):
-    def __init__(self, block_manager, rest_frame, trained_path, device, dict, used_core):
+    def __init__(self, block_manager, rest_frame, trained_path, device, dict):
         super().__init__(block_manager, trained_path, device, dict)
         self._frame = rest_frame
-        self._used_core = used_core
 
     def _getblocks(self, block_id, sps):
         self._blocks_name = self._block_manager.get_blocks_id()
@@ -178,7 +177,7 @@ class ResNetDeployClient(MultiDeployClient):
             self._block_dict[self._blocks_name[id]] = block
 
     def start(self):
-        os.sched_setaffinity(os.getpid(), list(range(self._used_core)))
+        # os.sched_setaffinity(os.getpid(), list(range(self._used_core)))
         cnt = 0
         length = get_short_data(self.conn)
         pbar = tqdm(total=length)

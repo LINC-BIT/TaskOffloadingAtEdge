@@ -21,9 +21,9 @@ from offload.experiments.image_classification.resnet18.resnet18_utils import Res
 parser = argparse.ArgumentParser()
 parser.add_argument('--ip', type=str, help='ip地址', default='10.1.114.109')
 parser.add_argument('--port', type=int, help='端口号', default=9999)
-parser.add_argument('--path', type=str, help='保存路径', default='./results/legodnn')
+parser.add_argument('--dataset', default='cifar100', type=str, help='dataset [cifar10, cifar100]')
+parser.add_argument('--compress_layer_max_ratio', default=0.2, type=float, help='LegoDNN压缩率')
 parser.add_argument('--edge_device', type=str, help='使用设备', default='cpu')
-parser.add_argument('--cloud_device', type=str, help='使用设备', default='cpu')
 args = parser.parse_args()
 
 logging.getLogger('apscheduler').setLevel(logging.WARNING)
@@ -36,8 +36,8 @@ def start_monitor_bwdown(client):
     monitor_cli = MultiMoniterBWdownClient(client)
     monitor_cli.start()
 
-def start_monitor_device_info(client, core_num):
-    monitor_cli = MultiMoniterDeviceInfoClient(client, core_num)
+def start_monitor_device_info(client):
+    monitor_cli = MultiMoniterDeviceInfoClient(client)
     monitor_cli.start()
 
 def scheduler_for_bandwidth_monitor(fn, client, flag):
@@ -49,11 +49,11 @@ def scheduler_for_bandwidth_monitor(fn, client, flag):
     # except Exception:
     #     pass
 
-def scheduler_for_device_monitor(fn, client, flag, core_num):
+def scheduler_for_device_monitor(fn, client, flag):
     # 创建调度器
     # try:
         while flag.value == 0:
-            fn(client, core_num)
+            fn(client)
             time.sleep(3)
     # except Exception:
     #     pass
@@ -62,20 +62,17 @@ if __name__ == '__main__':
     torch.multiprocessing.set_start_method('spawn')
 
     cv_task = 'image_classification'
-    dataset_name = 'cifar100'
+    dataset_name = args.dataset
     model_name = 'resnet18'
     method = 'legodnn'
     edge_device = args.edge_device
-    cloud_device = args.cloud_device
-    compress_layer_max_ratio = 0.2
+    compress_layer_max_ratio = args.compress_layer_max_ratio
     model_input_size = (1, 3, 32, 32)
     block_sparsity = [0.0, 0.2, 0.4, 0.6, 0.8]
-    acc_threshold = 0.7
     edge_latency_threshold = mp.Value('d', 0.)
     edge_memory_threshold = mp.Value('d', 0.)
-    used_core = 20
 
-    root_path = os.path.join(args.path, cv_task,
+    root_path = os.path.join('./results', method, cv_task,
                              model_name + '_' + dataset_name + '_' + str(compress_layer_max_ratio).replace('.', '-'))
 
     compressed_blocks_dir_path = root_path + '/compressed'
@@ -111,7 +108,7 @@ if __name__ == '__main__':
 
     # mp.Process(target=scheduler_for_bandwidth_monitor, args=(start_monitor_bwup, bwup_client, bwup_run)).start()
     # mp.Process(target=scheduler_for_bandwidth_monitor, args=(start_monitor_bwdown, bwdown_client, bwdown_run)).start()
-    mp.Process(target=scheduler_for_device_monitor, args=(start_monitor_device_info, device_info_client, device_monitor_run, used_core)).start()
+    mp.Process(target=scheduler_for_device_monitor, args=(start_monitor_device_info, device_info_client, device_monitor_run)).start()
 
     start_monitor_bwup(bwup_client)
     start_monitor_bwdown(bwdown_client)
@@ -137,7 +134,7 @@ if __name__ == '__main__':
 
     print('\033[1;36m-------------------------------->    START BLOCK INFERENCE\033[0m')
     _, _, rest_frame = getModelRootAndEnd(trained_blocks_dir_path, edge_device)
-    d_client = ResNetDeployClient(block_manager, rest_frame, trained_blocks_dir_path, edge_device, client, used_core)
+    d_client = ResNetDeployClient(block_manager, rest_frame, trained_blocks_dir_path, edge_device, client)
     d_client.start()
 
     device_monitor_run.value = 1

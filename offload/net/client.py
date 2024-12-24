@@ -490,13 +490,13 @@ class MultiMoniterBWdownClient:
         send_short_data(self.conn, bw, 'Bandwidth', show=False)
 
 class MultiMoniterDeviceInfoClient:
-    def __init__(self, dict, core_num):
+    def __init__(self, dict):
         super().__init__()
         self.conn = dict['client']
-        self.core_num = core_num
+        # self.core_num = core_num
 
     def start(self):
-        os.sched_setaffinity(os.getpid(), list(range(self.core_num)))
+        # os.sched_setaffinity(os.getpid(), list(range(self.core_num)))
         l_th, m_th, flops = monitorCPUInfo()
 
         # logger.info(f'{l_th}, {m_th}')

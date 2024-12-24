@@ -15,9 +15,8 @@ from net.client import MultiMoniterDeviceInfoClient, MultiMoniterBWupClient, Mul
 parser = argparse.ArgumentParser()
 parser.add_argument('--ip', type=str, help='ip地址', default='10.1.114.109')
 parser.add_argument('--port', type=int, help='端口号', default=9999)
-parser.add_argument('--path', type=str, help='保存路径', default='./results')
+parser.add_argument('--dataset', default='cifar100', type=str, help='dataset [cifar10, cifar100]')
 parser.add_argument('--edge_device', type=str, help='使用设备', default='cpu')
-parser.add_argument('--cloud_device', type=str, help='使用设备', default='cpu')
 args = parser.parse_args()
 
 logging.getLogger('apscheduler').setLevel(logging.WARNING)
@@ -56,12 +55,11 @@ if __name__ == '__main__':
     torch.multiprocessing.set_start_method('spawn')
 
     cv_task = 'image_classification'
-    dataset_name = 'cifar100'
+    dataset_name = args.dataset
     model_name = 'resnet'
     # method = 'legodnn'
     core_num = 20
     edge_device = args.edge_device
-    cloud_device = args.cloud_device
 
     root_path = os.path.join(args.path, cv_task,
                              model_name, dataset_name)
@@ -99,7 +97,7 @@ if __name__ == '__main__':
     t.start()
 
     model, _ = resnet18_branchynet_cifar(num_classes, edge_device)
-    state_dict = torch.load(model_path, map_location=cloud_device)
+    state_dict = torch.load(model_path)
     model.load_state_dict(state_dict)
 
     c = DefaultClient(client, model, core_num, edge_device)
