@@ -18,8 +18,7 @@ from ddpg.train import Trainer
 parser = argparse.ArgumentParser()
 parser.add_argument('--ip', type=str, help='ip地址', default='10.1.114.109')
 parser.add_argument('--port', type=int, help='端口号', default=9999)
-parser.add_argument('--path', type=str, help='保存路径', default='./results')
-parser.add_argument('--edge_device', type=str, help='使用设备', default='cpu')
+parser.add_argument('--dataset', default='cifar100', type=str, help='dataset [cifar10, cifar100]')
 parser.add_argument('--cloud_device', type=str, help='使用设备', default='cpu')
 args = parser.parse_args()
 
@@ -78,10 +77,9 @@ if __name__ == '__main__':
     torch.multiprocessing.set_start_method('spawn')
 
     cv_task = 'image_classification'
-    dataset_name = 'cifar100'
+    dataset_name = args.dataset
     model_name = 'resnet'
     # method = 'legodnn'
-    edge_device = args.edge_device
     cloud_device = args.cloud_device
     model_input_size = (128, 3, 32, 32)
 
